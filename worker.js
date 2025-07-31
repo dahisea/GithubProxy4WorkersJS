@@ -3,7 +3,6 @@ class ProxyConfig {
     this.baseDomain = baseDomain;
 
     this.domainMappings = {
-      'github.com': 'gh',
       'api.github.com': 'api-gh',
       'gist.github.com': 'gist-gh',
       'raw.githubusercontent.com': 'rgh',
@@ -23,13 +22,15 @@ class ProxyConfig {
       'git-lfs.github.com': 'lfs-gh',
       'community.github.com': 'community-gh',
       'release-assets.githubusercontent.com': 'releases-gh',
+      'github.com': 'gh'
     };
 
     this.directReplacements = {
-      'alive.github.com': 'localhost',
-      'live.github.com': 'localhost',
-      'securitylab.github.com': 'localhost',
-      'collector.github.com': 'localhost',
+      'api.github.com': 'captive.apple.com',
+      'alive.github.com': 'captive.apple.com',
+      'live.github.com': 'captive.apple.com',
+      'securitylab.github.com': 'captive.apple.com',
+      'collector.github.com': 'captive.apple.com',
       'cdn.jsdelivr.net': 'testingcf.jsdelivr.net',
       'fastly.jsdelivr.net': 'testingcf.jsdelivr.net',
       'unpkg.com': 'unpkg.zhimg.com',
@@ -87,7 +88,7 @@ class RequestProcessor {
       const url = new URL(request.url);
       
       if (this.shouldBlock(request)) {
-        return this.createErrorResponse('Access denied', 403);
+        return this.createErrorResponse('Hello World!', 200);
       }
 
       if (url.protocol === 'http:') {
@@ -399,14 +400,50 @@ class RequestProcessor {
     return /text|json|javascript|xml|html|css/.test(contentType);
   }
 
-  addSecurityHeaders(html) {
-    const metaTags = [
-      '<meta name="referrer" content="no-referrer">',
-      '<meta name="robots" content="noindex, nofollow">'
-    ].join('');
+addSecurityHeaders(html) {
+  // 1. 删除不需要的 meta 标签
+  const metaTagsToRemove = [
+    '<meta\\s+http-equiv="x-pjax[^"]*"[^>]*>',
+    '<meta\\s+name="route-[^"]*"[^>]*>',
+    '<meta\\s+name="visitor-[^"]*"[^>]*>',
+    '<meta\\s+name="octolytics-[^"]*"[^>]*>',
+    '<meta\\s+name="turbo-[^"]*"[^>]*>',
+    '<meta\\s+name="request-id"[^>]*>',
+    '<meta\\s+name="html-safe-nonce"[^>]*>',
+    '<meta\\s+name="fetch-nonce"[^>]*>',
+    '<meta\\s+name="current-catalog-service-hash"[^>]*>',
+    '<meta\\s+name="google-site-verification"[^>]*>',
+    '<meta\\s+name="expected-hostname"[^>]*>',
+    '<meta\\s+name="hostname"[^>]*>',
+    '<meta\\s+name="theme-color"[^>]*>',
+    '<link\\s+rel="dns-prefetch"[^>]*>',
+    '<link\\s+rel="preconnect"[^>]*>'
+  ];
 
-    return html.replace(/<head[^>]*>/i, `$&${metaTags}`);
+  let cleanedHtml = html;
+  for (const pattern of metaTagsToRemove) {
+    cleanedHtml = cleanedHtml.replace(new RegExp(pattern, 'gi'), '');
   }
+
+  // 2. 让所有 <a> 标签在新窗口打开
+  cleanedHtml = cleanedHtml.replace(
+    /<a\s+([^>]*)>/gi,
+    (match, attributes) => {
+      // 如果已经有 target 属性，先移除
+      const withoutTarget = attributes.replace(/\btarget\s*=\s*["'][^"']*["']/gi, '');
+      // 添加 target="_blank"
+      return `<a ${withoutTarget} target="_blank">`;
+    }
+  );
+
+  // 3. 添加安全相关的 meta 标签
+  const securityMetaTags = [
+    '<meta name="referrer" content="no-referrer">',
+    '<meta name="robots" content="noindex, nofollow, noarchive, nosnippet">'
+  ].join('');
+
+  return cleanedHtml.replace(/<head[^>]*>/i, `$&${securityMetaTags}`);
+}
 
   replaceDomainReferences(text, isReverse = false) {
     let result = text;
@@ -464,6 +501,7 @@ class RequestProcessor {
       'Cross-Origin-Opener-Policy': 'same-origin-allow-popups',
       'X-Content-Type-Options': 'nosniff',
       'X-Frame-Options': 'SAMEORIGIN',
+      'X-Robots-Tag': 'noindex, nofollow, noarchive, nosnippet',
       'Cache-Control': 'public, max-age=172800, stale-while-revalidate=86400'
     };
 
@@ -471,7 +509,7 @@ class RequestProcessor {
       headers.set(key, value);
     });
 
-    ['content-security-policy', 'set-cookie'].forEach(header => headers.delete(header));
+    ['content-security-policy', 'set-cookie', 'x-github-request-id'].forEach(header => headers.delete(header));
 
     return headers;
   }
