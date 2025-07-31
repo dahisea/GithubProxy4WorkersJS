@@ -1,178 +1,522 @@
-// 域名映射配置
-const domain_mappings = {
-  'github.com': 'gh.',
-  'avatars.githubusercontent.com': 'avatars-githubusercontent-com.',
-  'github.githubassets.com': 'github-githubassets-com.',
-  'collector.github.com': 'collector-github-com.',
-  'api.github.com': 'api-github-com.',
-  'raw.githubusercontent.com': 'raw-githubusercontent-com.',
-  'gist.githubusercontent.com': 'gist-githubusercontent-com.',
-  'github.io': 'github-io.',
-  'assets-cdn.github.com': 'assets-cdn-github-com.',
-  'cdn.jsdelivr.net': 'cdn.jsdelivr-net.',
-  'securitylab.github.com': 'securitylab-github-com.',
-  'www.githubstatus.com': 'www-githubstatus-com.',
-  'npmjs.com': 'npmjs-com.',
-  'git-lfs.github.com': 'git-lfs-github-com.',
-  'githubusercontent.com': 'githubusercontent-com.',
-  'github.global.ssl.fastly.net': 'github-global-ssl-fastly-net.',
-  'api.npms.io': 'api-npms-io.',
-  'github.community': 'github-community.'
-};
+class ProxyConfig {
+  constructor(baseDomain = 'sakiko') {
+    this.baseDomain = baseDomain;
 
-// 需要重定向的路径
-const redirect_paths = ['/', '/login', '/signup', '/copilot'];
+    this.domainMappings = {
+      'github.com': 'gh',
+      'api.github.com': 'api-gh',
+      'gist.github.com': 'gist-gh',
+      'raw.githubusercontent.com': 'rgh',
+      'codeload.github.com': 'cl-gh',
+      'github.githubassets.com': 'assets-gh',
+      'avatars.githubusercontent.com': 'avatars-gh',
+      'user-images.githubusercontent.com': 'img-gh',
+      'private-user-images.githubusercontent.com': 'pimg-gh',
+      'camo.githubusercontent.com': 'camo-gh',
+      'cloud.githubusercontent.com': 'cloud-gh',
+      'media.githubusercontent.com': 'media-gh',
+      'objects.githubusercontent.com': 'objects-gh',
+      'desktop.githubusercontent.com': 'desktop-gh',
+      'favicons.githubusercontent.com': 'favicons-gh',
+      'education.github.com': 'edu-gh',
+      'central.github.com': 'central-gh',
+      'git-lfs.github.com': 'lfs-gh',
+      'community.github.com': 'community-gh',
+      'release-assets.githubusercontent.com': 'releases-gh',
+    };
+
+    this.directReplacements = {
+      'alive.github.com': 'localhost',
+      'live.github.com': 'localhost',
+      'securitylab.github.com': 'localhost',
+      'collector.github.com': 'localhost',
+      'cdn.jsdelivr.net': 'testingcf.jsdelivr.net',
+      'fastly.jsdelivr.net': 'testingcf.jsdelivr.net',
+      'unpkg.com': 'unpkg.zhimg.com',
+    };
+
+    this.specialUrlMappings = {
+      '/': 'https://github.com/dahisea/GithubProxy4WorkersJS',
+      '/login': 'https://github.com/dahisea/GithubProxy4WorkersJS',
+      '/signup': 'https://github.com/dahisea/GithubProxy4WorkersJS',
+    };
+
+    this.redirectPaths = new Set([
+      '/copilot', '/pricing', '/enterprise', '/premium-support',
+      '/features/spark', '/features/model', '/features/copilot/copilot-business',
+      '/security/advanced-security', '/team', '/organizations/new',
+      '/marketplace', '/sponsors'
+    ]);
+
+    this.securityConfig = {
+      allowedLanguages: new Set(['zh', 'zh-cn']),
+      allowedCountries: new Set(['CN']),
+      bannedASN: new Set(['AS8075', 'AS13335']),
+    };
+  }
+
+  getFullProxyDomain(originalDomain) {
+    const prefix = this.domainMappings[originalDomain];
+    return prefix ? `${prefix}.${this.baseDomain}` : null;
+  }
+
+  getOriginalDomain(proxyDomain) {
+    if (!proxyDomain.endsWith(`.${this.baseDomain}`)) {
+      return null;
+    }
+    
+    const prefix = proxyDomain.replace(`.${this.baseDomain}`, '');
+    
+    for (const [original, proxyPrefix] of Object.entries(this.domainMappings)) {
+      if (prefix === proxyPrefix) {
+        return original;
+      }
+    }
+    
+    return null;
+  }
+}
+
+class RequestProcessor {
+  constructor(config) {
+    this.config = config;
+  }
+
+  async processRequest(request) {
+    try {
+      const url = new URL(request.url);
+      
+      if (this.shouldBlock(request)) {
+        return this.createErrorResponse('Access denied', 403);
+      }
+
+      if (url.protocol === 'http:') {
+        url.protocol = 'https:';
+        return Response.redirect(url.href, 301);
+      }
+
+      if (request.method === 'OPTIONS') {
+        return this.handlePreflight();
+      }
+
+      const specialTarget = this.config.specialUrlMappings[url.pathname];
+      if (specialTarget) {
+        return this.handleSpecialUrl(request, specialTarget);
+      }
+
+      const effectiveHost = request.headers.get('Host') || url.host;
+
+      if (this.isDirectReplacementDomain(effectiveHost)) {
+        return this.handleDirectReplacement(request, effectiveHost);
+      }
+
+      return this.handleProxyPrefix(request, effectiveHost);
+    } catch (error) {
+      console.error('Request processing error:', error);
+      return this.createErrorResponse(`Server Error: ${error.message}`, 500);
+    }
+  }
+
+  shouldBlock(request) {
+    const url = new URL(request.url);
+    
+    if (this.config.redirectPaths.has(url.pathname)) {
+      return true;
+    }
+
+    if (request.cf) {
+      const { country, asn } = request.cf;
+      
+      if (country && !this.config.securityConfig.allowedCountries.has(country)) {
+        return true;
+      }
+      
+      if (asn && this.config.securityConfig.bannedASN.has(`AS${asn}`)) {
+        return true;
+      }
+    }
+
+    const acceptLanguage = request.headers.get('Accept-Language');
+    if (acceptLanguage && !this.hasAllowedLanguage(acceptLanguage)) {
+      return true;
+    }
+
+    return false;
+  }
+
+  hasAllowedLanguage(acceptLanguage) {
+    return acceptLanguage
+      .split(',')
+      .map(lang => lang.split(';')[0].trim().toLowerCase())
+      .some(lang => 
+        this.config.securityConfig.allowedLanguages.has(lang) || 
+        this.config.securityConfig.allowedLanguages.has(lang.split('-')[0])
+      );
+  }
+
+  handlePreflight() {
+    return new Response(null, {
+      status: 204,
+      headers: {
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS, PATCH',
+        'Access-Control-Allow-Headers': '*',
+        'Access-Control-Max-Age': '86400',
+      }
+    });
+  }
+
+  async handleSpecialUrl(request, targetUrl) {
+    const originalUrl = new URL(request.url);
+    const newUrl = new URL(targetUrl);
+    newUrl.search = originalUrl.search;
+    
+    const headers = this.createProxyHeaders(request.headers, newUrl.host);
+    const body = await this.processRequestBody(request);
+    
+    try {
+      const response = await fetch(newUrl, {
+        method: request.method,
+        headers,
+        body: request.method !== 'GET' && request.method !== 'HEAD' ? body : undefined,
+        redirect: 'manual'
+      });
+      
+      return this.processResponse(response);
+    } catch (error) {
+      return this.createErrorResponse(`Special URL proxy error: ${error.message}`, 502);
+    }
+  }
+
+  isDirectReplacementDomain(host) {
+    return Object.values(this.config.directReplacements).some(replacement =>
+      host === replacement || host.endsWith(`.${replacement}`)
+    );
+  }
+
+  getTargetHost(effectiveHost) {
+    for (const [original, replacement] of Object.entries(this.config.directReplacements)) {
+      if (effectiveHost === replacement || effectiveHost.endsWith(`.${replacement}`)) {
+        return original;
+      }
+    }
+    
+    return this.config.getOriginalDomain(effectiveHost);
+  }
+
+  async handleDirectReplacement(request, effectiveHost) {
+    const originalDomain = this.getTargetHost(effectiveHost);
+    if (!originalDomain) {
+      return this.createErrorResponse('Direct replacement not found', 404);
+    }
+
+    const url = new URL(request.url);
+    url.host = originalDomain;
+    
+    const headers = this.createProxyHeaders(request.headers, originalDomain);
+    const body = await this.processRequestBody(request);
+    
+    try {
+      const response = await fetch(url, {
+        method: request.method,
+        headers,
+        body: request.method !== 'GET' && request.method !== 'HEAD' ? body : undefined,
+        redirect: 'manual'
+      });
+      
+      return this.processResponse(response);
+    } catch (error) {
+      return this.createErrorResponse(`Direct replacement error: ${error.message}`, 502);
+    }
+  }
+
+  async handleProxyPrefix(request, effectiveHost) {
+    const targetHost = this.config.getOriginalDomain(effectiveHost);
+    if (!targetHost) {
+      return this.createErrorResponse('Domain not configured', 404);
+    }
+
+    const url = new URL(request.url);
+    const newUrl = new URL(url.pathname, `https://${targetHost}`);
+    newUrl.search = url.search;
+
+    const headers = this.createProxyHeaders(request.headers, targetHost);
+    const body = await this.processRequestBody(request);
+
+    try {
+      const response = await fetch(newUrl, {
+        method: request.method,
+        headers,
+        body: request.method !== 'GET' && request.method !== 'HEAD' ? body : undefined,
+        redirect: 'manual'
+      });
+
+      return this.processResponse(response);
+    } catch (error) {
+      return this.createErrorResponse(`Proxy error: ${error.message}`, 502);
+    }
+  }
+
+  async processRequestBody(request) {
+    if (request.method === 'GET' || request.method === 'HEAD') {
+      return null;
+    }
+
+    const contentType = request.headers.get('content-type') || '';
+    
+    try {
+      if (contentType.includes('application/json')) {
+        const text = await request.text();
+        return this.replaceDomainReferences(text, true);
+      } else if (contentType.includes('application/x-www-form-urlencoded')) {
+        const text = await request.text();
+        return this.processFormData(text);
+      }
+      return request.body;
+    } catch (error) {
+      console.error('Error processing request body:', error);
+      return request.body;
+    }
+  }
+
+  processFormData(text) {
+    try {
+      const formData = new URLSearchParams(text);
+      const processedFormData = new URLSearchParams();
+      
+      for (const [key, value] of formData) {
+        processedFormData.append(key, this.replaceDomainReferences(value, true));
+      }
+      
+      return processedFormData.toString();
+    } catch (error) {
+      console.error('Error processing form data:', error);
+      return text;
+    }
+  }
+
+  createProxyHeaders(originalHeaders, targetHost) {
+    const headers = new Headers([
+      ['Host', targetHost],
+      ['Origin', `https://${targetHost}`]
+    ]);
+
+    const safeHeaders = [
+      'accept', 'accept-encoding', 'accept-language',
+      'cache-control', 'content-type', 'content-length', 'user-agent',
+      'x-requested-with'
+    ];
+
+    safeHeaders.forEach(header => {
+      if (originalHeaders.has(header)) {
+        headers.set(header, originalHeaders.get(header));
+      }
+    });
+
+    const referer = originalHeaders.get('Referer');
+    if (referer) {
+      try {
+        const refererUrl = new URL(referer);
+        refererUrl.host = targetHost;
+        headers.set('Referer', refererUrl.href);
+      } catch (e) {
+        headers.set('Referer', `https://${targetHost}/`);
+      }
+    }
+    
+    return headers;
+  }
+
+  async processResponse(response) {
+    if ([301, 302, 303, 307, 308].includes(response.status)) {
+      return this.handleRedirect(response);
+    }
+
+    const contentType = response.headers.get('content-type') || '';
+    const headers = this.createResponseHeaders(response.headers);
+
+    if (!this.isTextContent(contentType)) {
+      return new Response(response.body, { status: response.status, headers });
+    }
+
+    try {
+      let text = await response.text();
+      
+      if (contentType.includes('html')) {
+        text = this.addSecurityHeaders(text);
+      }
+      
+      text = this.replaceDomainReferences(text);
+      
+      return new Response(text, { status: response.status, headers });
+    } catch (error) {
+      console.error('Error processing response:', error);
+      return new Response(response.body, { status: response.status, headers });
+    }
+  }
+
+  handleRedirect(response) {
+    const location = response.headers.get('Location');
+    if (!location) return response;
+
+    const modifiedLocation = this.modifyLocationHeader(location);
+    const headers = this.createResponseHeaders(response.headers);
+    headers.set('Location', modifiedLocation);
+
+    return new Response(response.body, { status: response.status, headers });
+  }
+
+  modifyLocationHeader(location) {
+    try {
+      if (location.startsWith('/')) {
+        return location;
+      }
+
+      const url = new URL(location);
+
+      for (const [original, replacement] of Object.entries(this.config.directReplacements)) {
+        if (url.host === original) {
+          url.host = replacement;
+          return url.toString();
+        }
+      }
+
+      for (const [original, proxyPrefix] of Object.entries(this.config.domainMappings)) {
+        if (url.host === original) {
+          url.host = `${proxyPrefix}.${this.config.baseDomain}`;
+          return url.toString();
+        }
+      }
+
+      return url.toString();
+    } catch (error) {
+      console.error('Error modifying location header:', error);
+      return location;
+    }
+  }
+
+  isTextContent(contentType) {
+    return /text|json|javascript|xml|html|css/.test(contentType);
+  }
+
+  addSecurityHeaders(html) {
+    const metaTags = [
+      '<meta name="referrer" content="no-referrer">',
+      '<meta name="robots" content="noindex, nofollow">'
+    ].join('');
+
+    return html.replace(/<head[^>]*>/i, `$&${metaTags}`);
+  }
+
+  replaceDomainReferences(text, isReverse = false) {
+    let result = text;
+
+    try {
+      if (isReverse) {
+        for (const [original, replacement] of Object.entries(this.config.directReplacements)) {
+          result = result.replace(
+            new RegExp(`(https?:\\/\\/)${replacement.replace(/\./g, '\\.')}(\\/|$)`, 'gi'),
+            `$1${original}$2`
+          );
+        }
+        
+        for (const [original, proxyPrefix] of Object.entries(this.config.domainMappings)) {
+          const fullProxyDomain = `${proxyPrefix}.${this.config.baseDomain}`;
+          result = result.replace(
+            new RegExp(`(https?:\\/\\/)${fullProxyDomain.replace(/\./g, '\\.')}(\\/|$)`, 'gi'),
+            `$1${original}$2`
+          );
+        }
+      } else {
+        for (const [original, replacement] of Object.entries(this.config.directReplacements)) {
+          result = result.replace(
+            new RegExp(`(https?:\\/\\/)${original.replace(/\./g, '\\.')}(\\/|$)`, 'gi'),
+            `$1${replacement}$2`
+          );
+        }
+        
+        for (const [original, proxyPrefix] of Object.entries(this.config.domainMappings)) {
+          const fullProxyDomain = `${proxyPrefix}.${this.config.baseDomain}`;
+          result = result.replace(
+            new RegExp(`(https?:\\/\\/)${original.replace(/\./g, '\\.')}(\\/|$)`, 'gi'),
+            `$1${fullProxyDomain}$2`
+          );
+        }
+      }
+    } catch (error) {
+      console.error('Error replacing domain references:', error);
+    }
+
+    return result;
+  }
+
+  createResponseHeaders(originalHeaders) {
+    const headers = new Headers(originalHeaders);
+
+    const securityHeaders = {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS, PATCH',
+      'Access-Control-Allow-Headers': '*',
+      'Access-Control-Allow-Credentials': 'true',
+      'Referrer-Policy': 'no-referrer',
+      'Cross-Origin-Resource-Policy': 'cross-origin',
+      'Cross-Origin-Embedder-Policy': 'unsafe-none',
+      'Cross-Origin-Opener-Policy': 'same-origin-allow-popups',
+      'X-Content-Type-Options': 'nosniff',
+      'X-Frame-Options': 'SAMEORIGIN',
+      'Cache-Control': 'public, max-age=172800, stale-while-revalidate=86400'
+    };
+
+    Object.entries(securityHeaders).forEach(([key, value]) => {
+      headers.set(key, value);
+    });
+
+    ['content-security-policy', 'set-cookie'].forEach(header => headers.delete(header));
+
+    return headers;
+  }
+
+  createErrorResponse(message, status) {
+    return new Response(JSON.stringify({
+      error: message,
+      status,
+      timestamp: new Date().toISOString()
+    }), {
+      status,
+      headers: {
+        'Content-Type': 'application/json',
+        'Access-Control-Allow-Origin': '*'
+      }
+    });
+  }
+}
 
 addEventListener('fetch', event => {
-  event.respondWith(handleRequest(event.request));
+  const config = new ProxyConfig();
+  const processor = new RequestProcessor(config);
+  
+  event.respondWith(
+    processor.processRequest(event.request).catch(error => {
+      console.error('Unhandled error:', error);
+      return new Response(JSON.stringify({
+        error: 'Internal Server Error',
+        message: error.message,
+        timestamp: new Date().toISOString()
+      }), {
+        status: 500,
+        headers: {
+          'Content-Type': 'application/json',
+          'Access-Control-Allow-Origin': '*'
+        }
+      });
+    })
+  );
 });
 
-async function handleRequest(request) {
-  const url = new URL(request.url);
-  const current_host = url.host;
-  
-  // 检测Host头，优先使用Host头中的域名来决定后缀
-  const host_header = request.headers.get('Host');
-  const effective_host = host_header || current_host;
-  
-  // 检查特殊路径重定向
-  if (redirect_paths.includes(url.pathname)) {
-    return Response.redirect('https://www.gov.cn', 302);
-  }
+addEventListener('scheduled', event => {
+  event.waitUntil(handleScheduled());
+});
 
-  // 强制使用 HTTPS
-  if (url.protocol === 'http:') {
-    url.protocol = 'https:';
-    return Response.redirect(url.href);
-  }
-
-  // 从有效主机名中提取前缀
-  const host_prefix = getProxyPrefix(effective_host);
-  if (!host_prefix) {
-    return new Response('Domain not configured for proxy', { status: 404 });
-  }
-
-  // 根据前缀找到对应的原始域名
-  let target_host = null;
-  for (const [original, prefix] of Object.entries(domain_mappings)) {
-    if (prefix === host_prefix) {
-      target_host = original;
-      break;
-    }
-  }
-
-  if (!target_host) {
-    return new Response('Domain not configured for proxy', { status: 404 });
-  }
-
-  // 直接使用正则表达式处理最常见的嵌套URL问题
-  let pathname = url.pathname;
-  
-  // 修复特定的嵌套URL模式 - 直接移除嵌套URL部分
-  // 匹配 /xxx/xxx/latest-commit/main/https%3A//gh.xxx.xxx/ 或 /xxx/xxx/tree-commit-info/main/https%3A//gh.xxx.xxx/
-  pathname = pathname.replace(/(\/[^\/]+\/[^\/]+\/(?:latest-commit|tree-commit-info)\/[^\/]+)\/https%3A\/\/[^\/]+\/.*/, '$1');
-  
-  // 同样处理非编码版本
-  pathname = pathname.replace(/(\/[^\/]+\/[^\/]+\/(?:latest-commit|tree-commit-info)\/[^\/]+)\/https:\/\/[^\/]+\/.*/, '$1');
-
-  // 构建新的请求URL
-  const new_url = new URL(url);
-  new_url.host = target_host;
-  new_url.pathname = pathname;
-  new_url.protocol = 'https:';
-
-  // 设置新的请求头
-  const new_headers = new Headers(request.headers);
-  new_headers.set('Host', target_host);
-  new_headers.set('Referer', new_url.href);
-  
-  try {
-    // 发起请求
-    const response = await fetch(new_url.href, {
-      method: request.method,
-      headers: new_headers,
-      body: request.method !== 'GET' ? request.body : undefined
-    });
-
-    // 克隆响应以便处理内容
-    const response_clone = response.clone();
-    
-    // 设置新的响应头
-    const new_response_headers = new Headers(response.headers);
-    new_response_headers.set('access-control-allow-origin', '*');
-    new_response_headers.set('access-control-allow-credentials', 'true');
-    new_response_headers.set('cache-control', 'public, max-age=14400');
-    new_response_headers.delete('content-security-policy');
-    new_response_headers.delete('content-security-policy-report-only');
-    new_response_headers.delete('clear-site-data');
-    
-    // 处理响应内容，替换域名引用，使用有效主机名来决定域名后缀
-    const modified_body = await modifyResponse(response_clone, host_prefix, effective_host);
-
-    return new Response(modified_body, {
-      status: response.status,
-      headers: new_response_headers
-    });
-  } catch (err) {
-    return new Response(`Proxy Error: ${err.message}`, { status: 502 });
-  }
-}
-
-// 获取当前主机名的前缀，用于匹配反向映射
-function getProxyPrefix(host) {
-  // 检查主机名是否以 gh. 开头
-  if (host.startsWith('gh.')) {
-    return 'gh.';
-  }
-  
-  // 检查其他映射前缀
-  for (const prefix of Object.values(domain_mappings)) {
-    if (host.startsWith(prefix)) {
-      return prefix;
-    }
-  }
-  
-  return null;
-}
-
-async function modifyResponse(response, host_prefix, effective_hostname) {
-  // 只处理文本内容
-  const content_type = response.headers.get('content-type') || '';
-  if (!content_type.includes('text/') && !content_type.includes('application/json') && 
-      !content_type.includes('application/javascript') && !content_type.includes('application/xml')) {
-    return response.body;
-  }
-
-  let text = await response.text();
-  
-  // 使用有效主机名获取域名后缀部分（用于构建完整的代理域名）
-  const domain_suffix = effective_hostname.substring(host_prefix.length);
-  
-  // 替换所有域名引用
-  for (const [original_domain, proxy_prefix] of Object.entries(domain_mappings)) {
-    const escaped_domain = original_domain.replace(/\./g, '\\.');
-    const full_proxy_domain = `${proxy_prefix}${domain_suffix}`;
-    
-    // 替换完整URLs
-    text = text.replace(
-      new RegExp(`https?://${escaped_domain}(?=/|"|'|\\s|$)`, 'g'),
-      `https://${full_proxy_domain}`
-    );
-    
-    // 替换协议相对URLs
-    text = text.replace(
-      new RegExp(`//${escaped_domain}(?=/|"|'|\\s|$)`, 'g'),
-      `//${full_proxy_domain}`
-    );
-  }
-
-  // 处理相对路径，使用有效主机名
-  if (host_prefix === 'gh.') {
-    text = text.replace(
-      /(?<=["'])\/(?!\/|[a-zA-Z]+:)/g,
-      `https://${effective_hostname}/`
-    );
-  }
-
-  return text;
+async function handleScheduled() {
+  console.log('Health check completed at:', new Date().toISOString());
 }
