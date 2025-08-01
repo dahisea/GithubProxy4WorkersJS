@@ -1,5 +1,5 @@
 class ProxyConfig {
-  constructor(baseDomain = 'sakiko') {
+  constructor(baseDomain = 'jam.cz.eu.org') {
     this.baseDomain = baseDomain;
 
     this.domainMappings = {
@@ -298,8 +298,7 @@ class RequestProcessor {
 
   createProxyHeaders(originalHeaders, targetHost) {
     const headers = new Headers([
-      ['Host', targetHost],
-      ['Origin', `https://${targetHost}`]
+      ['Host', targetHost]
     ]);
 
     const safeHeaders = [
@@ -491,17 +490,10 @@ addSecurityHeaders(html) {
     const headers = new Headers(originalHeaders);
 
     const securityHeaders = {
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS, PATCH',
-      'Access-Control-Allow-Headers': '*',
-      'Access-Control-Allow-Credentials': 'true',
       'Referrer-Policy': 'no-referrer',
       'Cross-Origin-Resource-Policy': 'cross-origin',
       'Cross-Origin-Embedder-Policy': 'unsafe-none',
       'Cross-Origin-Opener-Policy': 'same-origin-allow-popups',
-      'X-Content-Type-Options': 'nosniff',
-      'X-Frame-Options': 'SAMEORIGIN',
-      'X-Robots-Tag': 'noindex, nofollow, noarchive, nosnippet',
       'Cache-Control': 'public, max-age=172800, stale-while-revalidate=86400'
     };
 
@@ -509,7 +501,7 @@ addSecurityHeaders(html) {
       headers.set(key, value);
     });
 
-    ['content-security-policy', 'set-cookie', 'x-github-request-id'].forEach(header => headers.delete(header));
+    ['connection', 'x-xss-protection', 'vary', 'content-security-policy', 'set-cookie', 'x-github-request-id'].forEach(header => headers.delete(header));
 
     return headers;
   }
